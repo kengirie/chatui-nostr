@@ -1,13 +1,17 @@
 import { type NLoginType, NUser, useNostrLogin } from '@nostrify/react/login';
 import { useNostr } from '@nostrify/react';
-import { useCallback, useMemo, useEffect, useState } from 'react';
-import { type NostrMetadata } from '@nostrify/nostrify';
+
+import { useCallback, useMemo, useRef, useContext } from 'react';
+import { type NostrEvent } from '@nostrify/nostrify';
+
 
 import { useAuthor } from './useAuthor.ts';
+import { useLocalStorage } from './useLocalStorage';
 
 export function useCurrentUser() {
   const { nostr } = useNostr();
   const { logins } = useNostrLogin();
+
   const [lastActiveTime, setLastActiveTime] = useState<number>(Date.now());
   const [sessionId] = useState<string>(() => Math.random().toString(36).substring(7));
   const [userPreferences, setUserPreferences] = useState<Record<string, any>>({});
@@ -28,7 +32,6 @@ export function useCurrentUser() {
     };
   }, []);
 
-  const loginToUser = useCallback((login: NLoginType): NUser  => {
     try {
       let user: NUser;
       
@@ -65,9 +68,19 @@ export function useCurrentUser() {
       console.error(`Failed to create user from login ${login.id}:`, error);
       throw error;
     }
-  }, [nostr]);
+    
+    const processingTime = performance.now() - startTime;
+    console.log(`⚡ Login processed in ${processingTime.toFixed(2)}ms`);
+    
+    // Cache the result with timestamp
+    const cacheData = { user, timestamp: Date.now(), processingTime };
+    setUserCache(prev => ({ ...prev, [cacheKey]: cacheData }));
+    
+    return user;
+  }, [nostr, userCache, setUserCache, setConnectionStatus]);
 
   const users = useMemo(() => {
+
     const validUsers: NUser[] = [];
     const invalidLogins: string[] = [];
 
@@ -88,8 +101,10 @@ export function useCurrentUser() {
       } catch (error) {
         console.warn(`❌ Skipped invalid login ${login.id}:`, error instanceof Error ? error.message : error);
         invalidLogins.push(login.id);
+
       }
-    }
+    });
+
 
     // Log summary
     if (validUsers.length > 0) {
@@ -102,9 +117,12 @@ export function useCurrentUser() {
     return validUsers;
   }, [logins, loginToUser]);
 
+
   // Select primary user (first valid user)
   const user = users[0] as NUser | undefined;
   const author = useAuthor(user?.pubkey);
+  
+
   
   // Enhanced user information
   const userInfo = useMemo(() => {
@@ -168,6 +186,7 @@ export function useCurrentUser() {
     users,
     ...author.data,
     
+
     // Enhanced user information
     userInfo,
     
