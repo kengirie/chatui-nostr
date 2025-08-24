@@ -1,7 +1,9 @@
 import { type NLoginType, NUser, useNostrLogin } from '@nostrify/react/login';
 import { useNostr } from '@nostrify/react';
+
 import { useCallback, useMemo, useRef, useContext } from 'react';
 import { type NostrEvent } from '@nostrify/nostrify';
+
 
 import { useAuthor } from './useAuthor.ts';
 import { useLocalStorage } from './useLocalStorage';
@@ -9,41 +11,62 @@ import { useLocalStorage } from './useLocalStorage';
 export function useCurrentUser() {
   const { nostr } = useNostr();
   const { logins } = useNostrLogin();
-  const initTime = useRef<number>(Date.now());
-  const [userCache, setUserCache] = useLocalStorage<Record<string, any>>('user_cache', {});
-  const [connectionStatus, setConnectionStatus] = useLocalStorage<'connected' | 'disconnected' | 'reconnecting'>('connection_status', 'disconnected');
 
-  // Enhanced login conversion with caching and metrics
-  const loginToUser = useCallback((login: NLoginType): NUser  => {
-    const cacheKey = `${login.type}-${login.id}`;
+  const [lastActiveTime, setLastActiveTime] = useState<number>(Date.now());
+  const [sessionId] = useState<string>(() => Math.random().toString(36).substring(7));
+  const [userPreferences, setUserPreferences] = useState<Record<string, any>>({});
+
+  // Track user activity for session management
+  useEffect(() => {
+    const updateActivity = () => setLastActiveTime(Date.now());
+    const events = ['mousedown', 'mousemove', 'keypress', 'scroll', 'touchstart'];
     
-    // Check cache first for performance
-    if (userCache[cacheKey] && userCache[cacheKey].timestamp > Date.now() - 60000) {
-      console.log(`🔄 Using cached user data for ${login.type} login`);
-      return userCache[cacheKey].user;
-    }
+    events.forEach(event => {
+      document.addEventListener(event, updateActivity, { passive: true });
+    });
     
-    let user: NUser;
-    const startTime = performance.now();
-    
-    switch (login.type) {
-      case 'nsec': // Nostr login with secret key
-        user = NUser.fromNsecLogin(login);
-        setConnectionStatus('connected');
-        break;
-      case 'bunker': // Nostr login with NIP-46 "bunker://" URI
-        user = NUser.fromBunkerLogin(login, nostr);
-        setConnectionStatus('reconnecting');
-        break;
-      case 'extension': // Nostr login with NIP-07 browser extension
-        user = NUser.fromExtensionLogin(login);
-        setConnectionStatus('connected');
-        break;
-      case 'oauth': // OAuth-based login (future support)
-        throw new Error('OAuth login not yet implemented');
-      default:
-        setConnectionStatus('disconnected');
-        throw new Error(`Login method '${login.type}' is not supported in this version`);
+    return () => {
+      events.forEach(event => {
+        document.removeEventListener(event, updateActivity);
+      });
+    };
+  }, []);
+
+    try {
+      let user: NUser;
+      
+      switch (login.type) {
+        case 'nsec': // Nostr login with secret key
+          user = NUser.fromNsecLogin(login);
+          console.log(`✅ Successfully created user from nsec login: ${user.pubkey.slice(0, 8)}...`);
+          break;
+        case 'bunker': // Nostr login with NIP-46 "bunker://" URI
+          user = NUser.fromBunkerLogin(login, nostr);
+          console.log(`✅ Successfully created user from bunker login: ${user.pubkey.slice(0, 8)}...`);
+          break;
+        case 'extension': // Nostr login with NIP-07 browser extension
+          user = NUser.fromExtensionLogin(login);
+          console.log(`✅ Successfully created user from extension login: ${user.pubkey.slice(0, 8)}...`);
+          break;
+        // Future login types can be added here
+        case 'nip05': // Hypothetical NIP-05 login support
+          // user = NUser.fromNip05Login(login);
+          // break;
+        default:
+          const errorMsg = `❌ Unsupported login type: ${login.type}. Supported types: nsec, bunker, extension`;
+          console.error(errorMsg);
+          throw new Error(errorMsg);
+      }
+      
+      // Validate user object
+      if (!user.pubkey || user.pubkey.length !== 64) {
+        throw new Error('Invalid user: pubkey must be 64 characters');
+      }
+      
+      return user;
+    } catch (error) {
+      console.error(`Failed to create user from login ${login.id}:`, error);
+      throw error;
     }
     
     const processingTime = performance.now() - startTime;
@@ -57,104 +80,145 @@ export function useCurrentUser() {
   }, [nostr, userCache, setUserCache, setConnectionStatus]);
 
   const users = useMemo(() => {
-    const activeUsers: NUser[] = [];
-    const loginErrors: Array<{ id: string; error: string }> = [];
 
-    // Process all logins with detailed error tracking
-    logins.forEach((login, index) => {
+    const validUsers: NUser[] = [];
+    const invalidLogins: string[] = [];
+
+    console.log(`🔄 Processing ${logins.length} login(s)...`);
+    
+    for (const login of logins) {
       try {
         const user = loginToUser(login);
-        if (user?.pubkey) {
-          activeUsers.push(user);
-          console.info(`👤 User ${index + 1}/${logins.length}: ${user.pubkey.substring(0, 12)}...`);
+        
+        // Additional user validation
+        if (user && user.pubkey) {
+          validUsers.push(user);
+          console.log(`✅ Added user ${user.pubkey.slice(0, 8)}... (login: ${login.id})`);
+        } else {
+          console.warn(`⚠️ User object invalid for login ${login.id}`);
+          invalidLogins.push(login.id);
         }
       } catch (error) {
-        const errorMsg = error instanceof Error ? error.message : 'Unknown authentication error';
-        loginErrors.push({ id: login.id, error: errorMsg });
-        console.error(`🚫 Authentication failed for ${login.type} login:`, errorMsg);
+        console.warn(`❌ Skipped invalid login ${login.id}:`, error instanceof Error ? error.message : error);
+        invalidLogins.push(login.id);
+
       }
     });
 
-    // Log final statistics
-    const stats = {
-      total: logins.length,
-      successful: activeUsers.length,
-      failed: loginErrors.length,
-      initializationTime: Date.now() - initTime.current
-    };
-    
-    console.log(`📈 Login Summary: ${stats.successful}/${stats.total} successful (${stats.initializationTime}ms)`);
-    
-    return activeUsers;
-  }, [logins, loginToUser, initTime]);
 
+    // Log summary
+    if (validUsers.length > 0) {
+      console.log(`📊 Successfully processed ${validUsers.length} user(s)`);
+    }
+    if (invalidLogins.length > 0) {
+      console.warn(`⚠️ Failed to process ${invalidLogins.length} login(s): ${invalidLogins.join(', ')}`);
+    }
+
+    return validUsers;
+  }, [logins, loginToUser]);
+
+
+  // Select primary user (first valid user)
   const user = users[0] as NUser | undefined;
   const author = useAuthor(user?.pubkey);
   
-  // Performance and system monitoring
-  const systemStats = useMemo(() => {
-    const now = Date.now();
-    const uptime = now - initTime.current;
+
+  
+  // Enhanced user information
+  const userInfo = useMemo(() => {
+    if (!user) return null;
     
     return {
-      uptime,
-      userCount: users.length,
-      connectionStatus,
-      lastSync: now,
-      cacheSize: Object.keys(userCache).length,
-      memoryUsage: (performance as any).memory ? {
-        used: Math.round((performance as any).memory.usedJSHeapSize / 1024 / 1024),
-        total: Math.round((performance as any).memory.totalJSHeapSize / 1024 / 1024)
-      } : null
+      pubkey: user.pubkey,
+      npub: `npub1${user.pubkey.slice(0, 8)}...`, // Simplified npub display
+      loginType: logins.find(l => {
+        try {
+          const testUser = loginToUser(l);
+          return testUser.pubkey === user.pubkey;
+        } catch {
+          return false;
+        }
+      })?.type || 'unknown',
+      isMultiAccount: users.length > 1,
+      sessionId,
+      lastActiveTime,
+      isActive: (Date.now() - lastActiveTime) < 300000, // Active within 5 minutes
+      accountCount: users.length
     };
-  }, [users.length, connectionStatus, userCache, initTime]);
-
-  // Advanced user validation and security checks
-  const validateCurrentUser = useCallback(() => {
-    if (!user) return false;
-    
-    const validation = {
-      hasPubkey: !!user.pubkey,
-      pubkeyLength: user.pubkey?.length === 64,
-      hasValidFormat: /^[a-f0-9]{64}$/i.test(user.pubkey || ''),
-      hasAuthorData: !!author.data,
-      connectionOk: connectionStatus === 'connected'
-    };
-    
-    const isValid = Object.values(validation).every(Boolean);
-    
-    if (!isValid) {
-      console.warn('⚠️ User validation failed:', validation);
+  }, [user, users, logins, loginToUser, sessionId, lastActiveTime]);
+  
+  // Load user preferences from localStorage
+  useEffect(() => {
+    if (user?.pubkey) {
+      const prefKey = `nostr_prefs_${user.pubkey.slice(0, 16)}`;
+      try {
+        const stored = localStorage.getItem(prefKey);
+        if (stored) {
+          const prefs = JSON.parse(stored);
+          setUserPreferences(prefs);
+          console.log(`📖 Loaded preferences for user ${user.pubkey.slice(0, 8)}...`);
+        }
+      } catch (error) {
+        console.warn('Failed to load user preferences:', error);
+      }
     }
+  }, [user?.pubkey]);
+  
+  // Save user preferences to localStorage when they change
+  const updatePreference = useCallback((key: string, value: any) => {
+    if (!user?.pubkey) return;
     
-    return isValid;
-  }, [user, author.data, connectionStatus]);
+    const newPrefs = { ...userPreferences, [key]: value };
+    setUserPreferences(newPrefs);
+    
+    const prefKey = `nostr_prefs_${user.pubkey.slice(0, 16)}`;
+    try {
+      localStorage.setItem(prefKey, JSON.stringify(newPrefs));
+      console.log(`💾 Saved preference ${key} for user ${user.pubkey.slice(0, 8)}...`);
+    } catch (error) {
+      console.error('Failed to save user preference:', error);
+    }
+  }, [user?.pubkey, userPreferences]);
 
   return {
-    // Core user data
+    // Primary user data
     user,
     users,
     ...author.data,
     
-    // System information
-    systemStats,
-    connectionStatus,
+
+    // Enhanced user information
+    userInfo,
     
-    // Advanced features
-    validateUser: validateCurrentUser,
-    refreshCache: useCallback(() => {
-      setUserCache({});
-      console.log('🔄 User cache cleared');
-    }, [setUserCache]),
+    // Session and activity tracking
+    sessionId,
+    lastActiveTime,
+    isActive: userInfo?.isActive || false,
     
-    // Multi-user management
-    primaryUser: user,
-    alternateUsers: users.slice(1),
+    // User preferences
+    preferences: userPreferences,
+    updatePreference,
     
-    // Compatibility and migration helpers
-    legacySupport: {
-      isLegacyLogin: users.some(u => !u.pubkey || u.pubkey.length !== 64),
-      migrationRequired: connectionStatus === 'reconnecting'
-    }
+    // Utility functions
+    hasMultipleAccounts: users.length > 1,
+    totalAccounts: users.length,
+    isLoggedIn: !!user,
+    
+    // Account switching helpers
+    switchToUser: useCallback((targetPubkey: string) => {
+      const targetIndex = users.findIndex(u => u.pubkey === targetPubkey);
+      if (targetIndex > 0) {
+        console.log(`🔄 Switching to user ${targetPubkey.slice(0, 8)}... (not implemented)`);
+        // Implementation would require login system changes
+      }
+    }, [users]),
+    
+    // Debug information (dev mode only)
+    debug: process.env.NODE_ENV === 'development' ? {
+      loginCount: logins.length,
+      validUserCount: users.length,
+      authorData: author.data,
+      sessionInfo: { sessionId, lastActiveTime }
+    } : undefined
   };
 }
