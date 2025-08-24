@@ -36,6 +36,7 @@ const defaultConfig: AppConfig = {
 };
 
 const presetRelays = [
+  { url: 'wss://yabu.me', name: 'Yabu' },
   { url: 'wss://ditto.pub/relay', name: 'Ditto' },
   { url: 'wss://relay.nostr.band', name: 'Nostr.Band' },
   { url: 'wss://relay.damus.io', name: 'Damus' },

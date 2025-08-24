@@ -1,0 +1,16 @@
+{
+  "name": "Nostr Chat",
+  "short_name": "NostrChat",
+  "description": "A Signal-like chat interface for the Nostr protocol",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#3b82f6",
+  "icons": [
+    {
+      "src": "/favicon.ico",
+      "sizes": "any",
+      "type": "image/x-icon"
+    }
+  ]
+}
