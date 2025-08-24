@@ -4,3 +4,4 @@
 // This file SHOULD NOT be edited or removed.
 
 export { useNostr } from "@nostrify/react";
+// For make conflict
